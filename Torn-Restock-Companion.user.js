@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Restock Companion
 // @namespace    local.torn.restock-companion
-// @version      1.2.3
+// @version      1.2.4
 // @description  Visible-page foreign-shop alerts and a cash check before planned departures.
 // @match        https://www.torn.com/page.php?sid=travel*
 // @grant        GM_getValue
@@ -244,6 +244,38 @@
   }
 
   function nextPurchase() {
+    const pane = document.querySelector('#oracle-panel .o-pane[data-view="plan"]');
+    if (pane) {
+      for (const row of pane.querySelectorAll("table tbody tr")) {
+        if (row.matches(".leg-done, .leg-missed, .leg-live")) continue;
+        const cells = row.querySelectorAll(":scope > td");
+        if (cells.length !== 5) continue;
+
+        const phase = cells[0].querySelector(".o-sub")?.textContent.trim();
+        if (!phase || phase === "flown" || phase === "no buy") continue;
+
+        const item = cells[1].cloneNode(true);
+        item.querySelectorAll(".o-sub").forEach((node) => node.remove());
+        const quantity = /^(\d+)\s*x\s+(.+)$/.exec(item.textContent.trim());
+        if (!quantity) continue;
+
+        const units = Number(quantity[1]);
+        const unitCostNode = cells[2].querySelector(".o-sub");
+        const unitCost = unitCostNode
+          ? parseCash(unitCostNode.textContent.replace(/\beach\b/i, "").trim())
+          : null;
+        if (!Number.isSafeInteger(units) || units < 1 || unitCost === null) continue;
+
+        const required = units * unitCost;
+        if (!Number.isSafeInteger(required)) continue;
+        return {
+          units,
+          name: quantity[2].trim(),
+          required,
+        };
+      }
+    }
+
     const trip = readOracleTrip();
     if (trip?.active && Array.isArray(trip.legs) && Array.isArray(trip.runtime)) {
       const index = trip.runtime.findIndex((runtime) => runtime?.status === "pending");
