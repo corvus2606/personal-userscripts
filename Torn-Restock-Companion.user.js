@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Restock Companion
 // @namespace    local.torn.restock-companion
-// @version      1.2.1
+// @version      1.2.3
 // @description  Visible-page foreign-shop alerts and a cash check before planned departures.
 // @match        https://www.torn.com/page.php?sid=travel*
 // @grant        GM_getValue
@@ -217,14 +217,6 @@
     return exact !== null ? parseCash(exact) : parseCash(money.textContent);
   }
 
-  function roundedCash(text) {
-    const match = /^\$(\d+(?:\.\d+)?)([kmb])$/i.exec(text.trim());
-    if (!match) return parseCash(text);
-    const multiplier = { k: 1000, m: 1000000, b: 1000000000 }[match[2].toLowerCase()];
-    const amount = Math.round(Number(match[1]) * multiplier);
-    return Number.isSafeInteger(amount) ? amount : null;
-  }
-
   function flightFare(button) {
     const confirmation = button.closest('[class*="departPanel___"]');
     if (!confirmation) return null;
@@ -236,30 +228,49 @@
     return distinct.length === 1 ? distinct[0] : null;
   }
 
+  function readOracleTrip() {
+    let trip = null;
+    try { trip = GM_getValue("oracle:trip", null); } catch {}
+    if (typeof trip === "string") {
+      try { trip = JSON.parse(trip); } catch { trip = null; }
+    }
+    if (!trip && typeof window.localStorage === "object") {
+      try {
+        const raw = window.localStorage.getItem("oracle:trip");
+        trip = raw ? JSON.parse(raw) : null;
+      } catch {}
+    }
+    return trip && typeof trip === "object" ? trip : null;
+  }
+
   function nextPurchase() {
-    const rows = document.querySelectorAll('#oracle-panel .o-pane[data-view="today"] table tbody tr');
-    for (const row of rows) {
-      if (row.matches(".leg-done, .leg-missed, .leg-live")) continue;
-      const cells = row.querySelectorAll(":scope > td");
-      if (cells.length !== 5) continue;
-      const phase = cells[0].querySelector(".o-sub")?.textContent.trim();
-      if (phase === "flown" || phase === "no buy") continue;
-      const item = cells[1].cloneNode(true);
-      item.querySelectorAll(".o-sub").forEach((node) => node.remove());
-      const quantity = /^(\d+)\s*x\s+(.+)$/.exec(item.textContent.trim());
-        const take = cells[2].cloneNode(true);
-        take.querySelectorAll(".o-sub").forEach((node) => node.remove());
-        const required = roundedCash(take.textContent.trim());
-        if (!quantity) return null;
-      const units = Number(quantity[1]);
-        if (!Number.isSafeInteger(units) || units < 1 || required === null || required <= 0) return null;
-      return { units, name: quantity[2], required };
+    const trip = readOracleTrip();
+    if (trip?.active && Array.isArray(trip.legs) && Array.isArray(trip.runtime)) {
+      const index = trip.runtime.findIndex((runtime) => runtime?.status === "pending");
+      const runtime = trip.runtime[index];
+      const leg = trip.legs[index];
+      if (runtime?.status === "pending" && leg) {
+        const units = Number(leg.units);
+        const unitCost = Number(leg.unit_cost);
+        const required = units * unitCost;
+        if (Number.isSafeInteger(units) && units > 0
+          && Number.isFinite(unitCost) && unitCost > 0
+          && Number.isSafeInteger(Math.ceil(required))) {
+          return {
+            units,
+            name: String(leg.item_name || "items"),
+            required: Math.ceil(required),
+          };
+        }
+      }
     }
     return null;
   }
 
   function guardTravel(event) {
-    const button = event.target instanceof Element ? event.target.closest("button.torn-btn") : null;
+    const button = event.target instanceof Element
+      ? event.target.closest("#travel-root button, button.torn-btn")
+      : null;
     if (!button || button.disabled || button.textContent.trim().toLowerCase() !== "travel") return;
     if (document.body.dataset.abroad === "true" || document.body.dataset.traveling === "true") return;
     const purchase = nextPurchase();
@@ -268,7 +279,7 @@
     const total = purchase && fare !== null ? purchase.required + fare : null;
     let warning = "";
     if (!purchase) {
-      warning = "Oracle's next trip and rounded Take amount could not be read. "
+      warning = "Oracle's exact next-trip purchase cost could not be read. "
         + "Open Oracle's Plan tab, check or refresh the plan, then try again.";
     } else if (cash === null) {
       warning = "Your current cash balance could not be read. "
@@ -278,7 +289,7 @@
         + "Check the travel confirmation and try again.";
     } else if (cash < total) {
       const money = (amount) => "$" + amount.toLocaleString("en-US");
-      warning = "Oracle's rounded Take amount: " + money(purchase.required) + " for "
+      warning = "Oracle's exact Take amount: " + money(purchase.required) + " for "
         + purchase.units + " x " + purchase.name + ".\nFlight fare: " + money(fare)
         + ".\nTotal needed: " + money(total) + ".\nYou have " + money(cash)
         + ". You need another " + money(total - cash) + ".";
